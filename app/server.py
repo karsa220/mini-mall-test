@@ -193,4 +193,5 @@ def order_list():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000)
+    # 监听 0.0.0.0 才能让真机/模拟器通过电脑 IP 访问到（手机抓包的硬前提）
+    app.run(host="0.0.0.0", port=5000, debug=False)

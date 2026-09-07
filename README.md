@@ -49,6 +49,7 @@ testdev-portfolio/
 ├── docs/
 │   ├── ...
 │   └── 10-Jenkins教学.md             # ⭐ Jenkins 入门到能跑（按 7 步走）
+│   └── 11-移动端Charles实战.md        # ⭐ Android/iOS 抓包 + 滴滴业务场景 + SSL Pinning 绕过思路
 └── run_allure.bat                    # ⭐ Windows 一键：启服务+跑测试+生成报告
 └── docs/                             # 测试交付物
     ├── 01-需求规格说明书.md
