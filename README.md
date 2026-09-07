@@ -44,7 +44,8 @@ testdev-portfolio/
 ├── Jenkinsfile                       # ⭐ Jenkins 流水线（实战升级版：定时+并行+Jira）
 ├── Jenkinsfile.multienv             # ⭐ 多环境并行回归 demo（linux/mac/windows agent）
 ├── Jenkinsfile.sonar                # ⭐ 质量门禁 demo（SonarQube 卡口 + 覆盖率）
-├── Jenkinsfile.pr-hook              # ⭐ PR 拦截 demo（GitHub webhook + Jira 自动建 bug）
+├── Jenkinsfile.pr-hook              # ⭐ PR 拦截 demo（GitHub webhook + Jira 自动建 bug + 端到端配置步骤）
+├── Jenkinsfile.auto-deploy          # ⭐ 自动部署 demo（Jenkins→Docker→K8s 闭合链路）
 ├── docs/
 │   ├── ...
 │   └── 10-Jenkins教学.md             # ⭐ Jenkins 入门到能跑（按 7 步走）
@@ -99,7 +100,8 @@ pytest --alluredir=reports/allure-results --clean-alluredir
 | **Jenkinsfile**（主文件） | ✅ 定时夜间跑（cron）<br>✅ 并行执行（parallel：登录/购物车/订单三组并行）<br>✅ 失败自动建 Jira bug | "主导 X 项目夜间定时回归 + 失败 30 秒内建缺陷到 Jira" |
 | **Jenkinsfile.multienv** | ✅ 多环境并行回归（agent label 分组） | "搭建 5 环境 ×3 客户端自动化回归体系，回归耗时 90min→15min" |
 | **Jenkinsfile.sonar** | ✅ 质量门禁（SonarQube 覆盖率/漏洞卡口） | "集成 SonarQube 质量门禁，PR 卡口覆盖率≥80%/漏洞=0" |
-| **Jenkinsfile.pr-hook** | ✅ PR 拦截（GitHub webhook 自动跑测试）<br>✅ CI 失败自动建缺陷（已在主文件里） | "搭建 PR 自动测试+卡口+建缺陷全链路，PR 平均合并时间从 4h 降至 30min" |
+| **Jenkinsfile.pr-hook** | ✅ PR 拦截（GitHub webhook 自动跑测试）<br>✅ CI 失败自动建缺陷（已在主文件里）<br>✅ 端到端配置步骤（PAT + 仓库 + 凭据 + 插件 + Branch Protection） | "搭建 PR 自动测试+卡口+建缺陷全链路，PR 平均合并时间从 4h 降至 30min" |
+| **Jenkinsfile.auto-deploy** | ✅ Docker 镜像构建+推送<br>✅ K8s 滚动更新（kubectl set image）<br>✅ 部署后冒烟测试+回滚预案<br>✅ Slack 通知成功/失败 | "搭建 Jenkins→Docker→K8s 自动部署链路，PR 合入到测试环境可用从 30min 缩至 5min" |
 
 **本地 5 分钟跑起来：**
 

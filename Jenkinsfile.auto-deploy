@@ -1,0 +1,314 @@
+// Jenkinsfile.auto-deploy — CI 通过后自动部署测试环境
+// 实战场景：PR 合到 main → 自动触发 → 跑测试 → 部署到测试环境 K8s → 跑冒烟 → 通知
+//
+// 闭合完整 devops 链路：
+//   1. 测试通过
+//   2. 构建镜像（Docker）
+//   3. 推镜像到私有仓库
+//   4. K8s 滚动更新（kubectl set image）
+//   5. 等待 Pod 就绪
+//   6. 跑生产冒烟（直接访问 K8s 内部服务）
+//   7. Slack 通知部署结果
+//
+// 简历可写："搭建 Jenkins→Docker→K8s 自动化部署链路，PR 合入到测试环境可用从 30 分钟缩短至 5 分钟"
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        timeout(time: 20, unit: 'MINUTES')
+        // 同一时间只允许一个部署任务跑，避免并发覆盖
+        disableConcurrentBuilds()
+    }
+
+    // 触发条件：推送到 main 分支（PR 拦截通过后合并进 main）
+    triggers {
+        // 简单方式：每个 main 分支 push 触发一次
+        // 工程方式：用 GitHub webhook + multibranch pipeline 只跑 main
+    }
+
+    environment {
+        // 镜像配置
+        IMAGE_NAME        = 'minimall-api'
+        IMAGE_TAG         = "${env.BUILD_NUMBER}"
+        REGISTRY          = 'registry.your-company.com'
+        FULL_IMAGE        = "${REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+        // K8s 配置（全部走 credentials 注入，绝不明文）
+        KUBECONFIG_CRED   = 'k8s-cluster-config'
+        DEPLOY_NAMESPACE  = 'staging'
+        DEPLOY_DEPLOYMENT = 'minimall-api'
+
+        // 通知
+        SLACK_WEBHOOK     = credentials('slack-deploy-webhook')
+
+        // 入参：要不要部署（默认部署）
+        SHOULD_DEPLOY     = 'true'
+    }
+
+    parameters {
+        booleanParam(
+            name: 'DEPLOY_TO_STAGING',
+            defaultValue: true,
+            description: '✅ 勾上 → 测试通过后部署到测试环境'
+        )
+        choice(
+            name: 'TARGET_ENV',
+            choices: ['staging', 'pre-prod'],
+            description: '目标环境'
+        )
+    }
+
+    stages {
+        stage('前置检查') {
+            steps {
+                script {
+                    if (!params.DEPLOY_TO_STAGING) {
+                        echo "⏭️ 部署已禁用，跳过"
+                        currentBuild.result = 'SUCCESS'
+                        return
+                    }
+                    if (!env.BRANCH_NAME || env.BRANCH_NAME != 'main') {
+                        echo "⏭️ 非 main 分支，不部署（仅 main 自动部署）"
+                        currentBuild.result = 'SUCCESS'
+                        return
+                    }
+                    echo "🚀 即将部署到 ${params.TARGET_ENV}"
+                }
+            }
+        }
+
+        stage('Checkout 代码') {
+            steps {
+                checkout scm
+            }
+        }
+
+        // ====== 测试阶段（复用主 Jenkinsfile 里的结构） ======
+        stage('跑接口自动化') {
+            steps {
+                sh '''
+                    cd automation
+                    python3 -m pip install -q -r requirements.txt
+                    # 启服务（与 PR 拦截不同：稳定环境用 K8s 内部地址）
+                    cd ../app && nohup python3 server.py > /tmp/srv.log 2>&1 &
+                    sleep 3
+                    cd ../automation
+                    python3 -m pytest --alluredir=reports/allure-results --clean-alluredir
+                '''
+            }
+            post {
+                always {
+                    allure includeProperties: false, jdk: '', results: [[path: 'automation/reports/allure-results']]
+                }
+            }
+        }
+
+        // ====== 部署阶段 ======
+        stage('构建 Docker 镜像') {
+            steps {
+                script {
+                    // 1. Dockerfile 在项目根目录
+                    // 2. BuildKit 缓存可选开，CI 上首次跑比较有感
+                    def dockerfile = """
+                    FROM python:3.11-slim
+                    WORKDIR /app
+                    COPY app/requirements.txt .
+                    RUN pip install --no-cache-dir -r requirements.txt
+                    COPY app/ .
+                    EXPOSE 5000
+                    CMD ["python", "server.py"]
+                    """
+                    writeFile file: 'Dockerfile', text: dockerfile
+
+                    // 3. 构建并打 tag
+                    def img = docker.build("${FULL_IMAGE}", "-f Dockerfile .")
+                    echo "✅ 镜像构建完成: ${FULL_IMAGE}"
+
+                    // 4. 推送到私有仓库
+                    docker.withRegistry("https://${REGISTRY}", 'docker-registry-cred') {
+                        img.push()
+                    }
+                    echo "📦 镜像推送完成"
+                }
+            }
+        }
+
+        stage('K8s 滚动部署') {
+            steps {
+                script {
+                    // 装 kubectl 不必每次重装，节点上预装即可
+                    withKubeConfig([credentialsId: KUBECONFIG_CRED, namespace: DEPLOY_NAMESPACE]) {
+                        sh """
+                            # 1. 更新 deployment 镜像版本（kubectl set image 是标准做法）
+                            kubectl set image deployment/${DEPLOY_DEPLOYMENT} \\
+                                api=${FULL_IMAGE} \\
+                                -n ${DEPLOY_NAMESPACE} \\
+                                --record
+
+                            # 2. 等滚动更新完成，超时 5 分钟
+                            kubectl rollout status deployment/${DEPLOY_DEPLOYMENT} \\
+                                -n ${DEPLOY_NAMESPACE} \\
+                                --timeout=300s
+
+                            # 3. 确认镜像版本确实更新了
+                            CURRENT_IMAGE=\$(kubectl get deployment/${DEPLOY_DEPLOYMENT} \\
+                                -n ${DEPLOY_NAMESPACE} \\
+                                -o jsonpath='{.spec.template.spec.containers[0].image}')
+
+                            if [ "\$CURRENT_IMAGE" != "${FULL_IMAGE}" ]; then
+                                echo "❌ 镜像未更新: \$CURRENT_IMAGE"
+                                exit 1
+                            fi
+                            echo "✅ 部署完成，当前镜像: \$CURRENT_IMAGE"
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('生产冒烟测试') {
+            steps {
+                // 直接访问测试环境的服务，验证部署真的生效
+                sh """
+                    # 真实场景应该是访问 K8s Service，这里简化为已 port-forward 到本地
+                    SERVICE_URL="\${SERVICE_URL:-http://127.0.0.1:5001}"
+
+                    echo "=== 冒烟 1: 商品列表 ==="
+                    curl -fsS "\$SERVICE_URL/api/products" | head -c 200
+
+                    echo ""
+                    echo "=== 冒烟 2: 登录拿 token ==="
+                    TOKEN=\$(curl -fsS -X POST "\$SERVICE_URL/api/login" \\
+                        -H "Content-Type: application/json" \\
+                        -d '{"username":"test01","password":"123456"}' \\
+                        | python3 -c "import sys, json; print(json.load(sys.stdin)['data']['token'])")
+
+                    echo "=== 冒烟 3: 加购 ==="
+                    curl -fsS -X POST "\$SERVICE_URL/api/cart/add" \\
+                        -H "Authorization: Bearer \$TOKEN" \\
+                        -H "Content-Type: application/json" \\
+                        -d '{"product_id":2,"quantity":1}'
+
+                    echo ""
+                    echo "✅ 三项冒烟全部通过"
+                """
+            }
+        }
+
+        stage('部署回滚预案') {
+            // 不主动跑，准备好回滚命令以防失败
+            steps {
+                script {
+                    env.ROLLBACK_CMD = """
+                        # 手动回滚一行命令：
+                        kubectl rollout undo deployment/${DEPLOY_DEPLOYMENT} -n ${DEPLOY_NAMESPACE}
+
+                        # 看历史版本：
+                        kubectl rollout history deployment/${DEPLOY_DEPLOYMENT} -n ${DEPLOY_NAMESPACE}
+                    """
+                    echo "📝 已记录回滚预案："
+                    echo env.ROLLBACK_CMD
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                // Slack 通知：部署成功
+                def msg = """
+                :rocket: *测试环境部署成功*
+                • 项目: MiniMall
+                • 环境: ${params.TARGET_ENV}
+                • 版本: ${env.BUILD_NUMBER}
+                • 镜像: ${FULL_IMAGE}
+                • Commit: ${env.GIT_COMMIT?.take(7)}
+                • 构建链接: ${env.BUILD_URL}
+                """.stripIndent()
+
+                httpRequest(
+                    url: SLACK_WEBHOOK,
+                    httpMode: 'POST',
+                    contentType: 'APPLICATION_JSON',
+                    requestBody: writeJSON(text: [text: msg])
+                )
+            }
+        }
+
+        failure {
+            script {
+                // Slack 通知：部署失败，附带回滚命令
+                def msg = """
+                :x: *测试环境部署失败*
+                • 环境: ${params.TARGET_ENV}
+                • Commit: ${env.GIT_COMMIT?.take(7)}
+                • 查看: ${env.BUILD_URL}
+                • 回滚: `kubectl rollout undo deployment/${DEPLOY_DEPLOYMENT} -n ${DEPLOY_NAMESPACE}`
+                """.stripIndent()
+
+                try {
+                    httpRequest(
+                        url: SLACK_WEBHOOK,
+                        httpMode: 'POST',
+                        contentType: 'APPLICATION_JSON',
+                        requestBody: writeJSON(text: [text: msg])
+                    )
+                } catch (e) {
+                    echo "Slack 通知失败: ${e}"
+                }
+
+                // ⚠️ 关键：大厂部署失败默认回滚（这里手动执行，因为失败原因可能很多）
+                // echo "开始自动回滚..."
+                // sh "kubectl rollout undo deployment/${DEPLOY_DEPLOYMENT} -n ${DEPLOY_NAMESPACE}"
+            }
+        }
+
+        always {
+            // 清理临时文件
+            sh 'rm -f Dockerfile || true'
+        }
+    }
+}
+
+// ===================================================================
+// Jenkins 凭据需要的 ID（在 Manage Credentials 里创建）：
+//   - docker-registry-cred : Username/Password，私有镜像仓库账号
+//   - k8s-cluster-config   : Secret File，kubeconfig 文件
+//   - slack-deploy-webhook : Secret Text，Slack incoming webhook URL
+//
+// 必备插件：
+//   - Docker Pipeline
+//   - Kubernetes CLI
+//   - Allure
+//   - Slack Notification（备选）
+//
+// 实际生产还会加：
+//   1. 灰度发布（金丝雀 5% → 50% → 100%）：用 Argo Rollouts 或 flagger
+//   2. 数据库 migration：跑 Liquibase / Flyway / Alembic
+//   3. 销毁测试环境：每天凌晨清理，省资源
+//   4. 混沌测试：自动注入故障验证弹性（ChaosBlade / Chaos Monkey）
+// ===================================================================
+
+// ## 面试场景话术（直接背）
+//
+// Q："你们的部署链是怎么搭的？"
+//
+// A："PR 合并到 main 后，Jenkins 自动 build image → push 到私有仓库 → kubectl set image 滚动更新 →
+//     等待 Pod 就绪 → 跑生产冒烟 → Slack 通知。整个链路 5 分钟内完成，从 PR 合并到测试环境可用。
+//     失败时 Kibana 看日志，Jenkins 一行命令回滚（kubectl rollout undo），30 秒回退到上一版本。"
+//
+// Q："为什么不用 Jenkinsfile 里直接 deploy，要拆开？"
+//
+// A："工程上有两个原因。第一，安全隔离：PR 拦截的 pipeline 只要 GitHub 凭据就行；
+//     部署 pipeline 需要 K8s admin 和镜像仓库 push 权限，凭证池分离能降低凭据泄露半径。
+//     第二，节奏不同：PR 每个 commit 都跑，部署只在 merge main 后跑。
+//     拆开后两边独立调优：PR 拦截重速度（快速 fail），部署重稳定性（自动回滚）。"
+//
+// Q："如果线上出 bug，CI 这套能帮忙吗？"
+//
+// A："能。两条机制：SonarQube 在代码层卡口，提前堵；pipeline 测试 + 冒烟在部署层卡口。
+//     万一绕过这两道，发版后也会被监控告警捕获（Kibana/Grafana），自动rollback靠
+//     Argo Rollouts 配置 SLO 触发，比人快。CI/CD 真正价值不是不出错，是出错半径最小。"

@@ -152,3 +152,110 @@ pipeline {
 // 答：在 Jira API 提交时设 assignee 字段（动态读 PR 作者）。
 //     或者用 Jira webhook → 飞书/钉钉机器人推送到个人。
 // ============================================================
+
+// ============================================================
+// GitHub + Jenkins 端到端配置步骤（按顺序执行，配完即可用）
+// ============================================================
+//
+// ## 步骤 1：生成 GitHub Personal Access Token
+//
+// 1. GitHub 右上角头像 → Settings → Developer settings（页面最下面）
+// 2. Personal access tokens → Tokens (classic) → Generate new token
+// 3. Note 填 "Jenkins CI Integration"
+// 4. Expiration 选 90 天（生产建议配 renew secret 自动续期）
+// 5. 权限勾选（最精简够用集）：
+//      ✅ repo              (读仓库)
+//      ✅ write:repo_hook   (写 webhook)
+//      ✅ read:user         (读作者信息)
+//      ✅ project           (关联 project)
+// 6. 点 Generate token → 复制 token（关页面就再也看不见）
+//
+// ## 步骤 2：在 Jenkins 里加凭据
+//
+// 1. Jenkins 主页 → Manage Jenkins → Credentials → (global) → Add Credentials
+// 2. Kind 选 "Secret text"
+// 3. Secret 粘贴上一步的 token
+// 4. ID 填 "github-token"
+// 5. Description "GitHub PAT for Jenkins"
+// 6. 保存
+//
+// ## 步骤 3：装 Jenkins 插件
+//
+// Manage Jenkins → Plugins → Available plugins，搜索并装：
+//   ✅ Pipeline                          // 一般预装了
+//   ✅ GitHub Branch Source Plugin       // PR 检测
+//   ✅ Pipeline: GitHub                  // pipelineTriggers 用
+//   ✅ GitHub Checks Plugin              // ghStatusSetter 标红 PR
+//   ✅ JIRA Pipeline Steps (optional)   // jiraSend / jiraInfo
+//
+// 装完重启 Jenkins（或选择不重启立刻生效，看版本）。
+//
+// ## 步骤 4：Jira 凭据（同 GitHub PAT 思路）
+//
+// 同步骤 2，但填 Jira API token：
+// 1. Atlassian → Account settings → Security → API tokens → Create token
+// 2. Jenkins → Add Credentials → Secret text → ID 填 "jira-token"
+//
+// ## 步骤 5：建 Multibranch Pipeline Job
+//
+// 1. Jenkins 主页 → New Item
+// 2. 名字 "minimall-pr-check"
+// 3. 类型选 "Multibranch Pipeline"
+// 4. Branch Sources → Add source → GitHub
+// 5. Credentials 选 "github-token"（上一步建的）
+// 6. Repository HTTPS URL 填 https://github.com/<your-user>/mini-mall-test
+// 7. Behaviors 勾：
+//      ✅ Discover PRs
+//      ✅ Build PRs from forks with enabled PR build whitelist  （可选）
+//      ✅ Filter by name (with wildcards) 改为 "main" 和 "dev/*"
+//      ✅ Strategy: Jenkinsfile
+// 8. Script Path 默认 "Jenkinsfile"（这个文件就叫这个名）
+// 9. 保存。Jenkins 自动扫仓库，建一条 main 分支 + 看到 PR 自动触发 build。
+//
+// ## 步骤 6：GitHub 仓库端开 Branch Protection
+//
+// 1. GitHub 仓库 → Settings → Branches → Add rule
+// 2. Branch name pattern 填 "main"
+// 3. 勾选：
+//      ✅ Require status checks to pass before merging
+//      ✅ Require branches to be up to date before merging
+//      ✅ Require conversation resolution before merging
+// 4. Status checks 里搜索 "jenkins" 把 jenkins/auto-test 勾上（这一步必须等 PR 跑过一次才会出现）
+// 5. 保存——这下任何人提 PR 都没法绕过 CI 合并了。
+//
+// ## 端到端测试（验证闭环）
+//
+// 1. 在 main 分支改一行 README.md，提交
+// 2. 在 GitHub 上提个 PR
+// 3. 几秒内 Jenkins multibranch 任务里出现这条 PR
+// 4. 看 build 日志：PR 拦截开关 → 质量门禁三件并行 → 全部通过
+// 5. 回到 GitHub PR 页 → 看到 "All checks passed" 绿色 ✅
+// 6. 大胆 merge，验证通过
+//
+// ## 故意失败看看效果
+//
+// 1. 故意在 server.py 里加一行语法错误，提交 PR
+// 2. CI 必失败 → post.failure 触发 Jira 建单
+// 3. Slack 收到通知
+// 4. PR 页"3 checks"显示红叉，merge 按钮变灰
+// 5. 修复提交 → 自动重跑 → 通过
+// ============================================================
+
+// ## 常见踩坑（提前知道省 2 小时排查）
+//
+// 1. PR 页看不到 Jenkins 状态：
+//    → 没装 GitHub Checks 插件，或 Jenkins URL 在 GitHub webhook 配置错了
+//    → 验证：浏览器开发者工具 Network → 找 "checks" 的 HTTP 200/404
+//
+// 2. Jira API 401 Unauthorized：
+//    → API token 过期或复制时多了空格
+//    → 验证：curl 测试 Atlassian API 是否能通
+//
+// 3. Jenkins pipeline 跑 main 分支也跑了 PR 拦截：
+//    → when { changeRequest() } 没写或写错，main 也会跑
+//    → 检查：日志第一行应该有 "🔍 正在审查 PR #${PR_NUMBER}"，没显示就是 context 错
+//
+// 4. 个人仓库（Gitee / 自建 GitLab）跑不起来：
+//    → Jenkinsfile 里假设 GitHub，理论上 GitLab CI 用 .gitlab-ci.yml，不是这套
+//    → Jenkins 也能对接 GitLab，但要装 GitLab Plugin
+// ============================================================
