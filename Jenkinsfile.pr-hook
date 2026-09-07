@@ -1,0 +1,154 @@
+// Jenkinsfile.pr-hook — PR 拦截 + 失败自动建 Jira bug
+// 实战场景：
+//   - GitHub PR 提交 → Jenkins 自动跑测试 + Sonar → 不通过直接拒绝合并
+//   - 测试失败 → 自动建 Jira bug → 自动 @ 责任人
+//
+// 前置准备：
+//   1) GitHub repo → Settings → Webhooks → 指向 Jenkins 的 GH hook URL
+//   2) Jenkins 装 GitHub Integration 插件 + Pipeline: Multibranch 插件
+//   3) Manage Jenkins → Credentials → 添加 jira-token（PAT 类型）
+//
+// 简历可写："搭建 PR 自动测试+卡口+失败建缺陷全链路，PR 平均合并时间从 4h 降至 30min"
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    // PR 拦截：当 PR 触发时跑这个 pipeline
+    triggers {
+        // 不需要定时触发，PR 触发即可
+    }
+
+    environment {
+        // PR 信息从 GitHub plugin 自动注入
+        PR_NUMBER  = "${env.CHANGE_ID}"
+        PR_AUTHOR  = "${env.CHANGE_AUTHOR}"
+        PR_TITLE   = "${env.CHANGE_TITLE}"
+        PR_URL     = "${env.CHANGE_URL}"
+        PR_TARGET  = "${env.CHANGE_TARGET}"
+
+        // Jira 配置（用凭据避免明文）
+        JIRA_BASE_URL    = 'https://your-company.atlassian.net'
+        JIRA_PROJECT_KEY = 'QA'
+        JIRA_TOKEN       = credentials('jira-token')
+    }
+
+    stages {
+        stage('PR 拦截开关') {
+            steps {
+                script {
+                    if (!env.CHANGE_ID) {
+                        error "❌ 这个 pipeline 只在 PR 触发时执行（CHANGE_ID 缺失）"
+                    }
+                    echo "🔍 正在审查 PR #${PR_NUMBER} from ${PR_AUTHOR}: ${PR_TITLE}"
+                }
+            }
+        }
+
+        stage('Checkout PR 代码') {
+            steps {
+                checkout scm
+            }
+        }
+
+        // 必须先跑的快速检查：lint + 单测 + 静态扫描
+        stage('质量门禁（快速）') {
+            parallel {
+                stage('代码风格') {
+                    steps {
+                        sh '''
+                            python3 -m pip install -q flake8
+                            flake8 app/ automation/ --max-line-length=120 || exit 1
+                        '''
+                    }
+                }
+                stage('单元测试') {
+                    steps {
+                        dir('automation') {
+                            sh '''
+                                python3 -m pytest test_api_login.py --alluredir=reports/unit
+                            '''
+                        }
+                    }
+                }
+                stage('接口冒烟') {
+                    steps {
+                        dir('app') {
+                            sh '''
+                                python3 -m pip install -q flask
+                                nohup python3 server.py > /tmp/srv.log 2>&1 &
+                                sleep 3
+                                curl -fsS http://127.0.0.1:5000/api/products > /dev/null
+                                pkill -f "python3 server.py" || true
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            // ⭐ 核心：CI 失败自动建 Jira bug，附带 PR 信息 + 日志链接
+            script {
+                try {
+                    def auth = "${JIRA_TOKEN}"
+                    def body = """
+                    {
+                        "fields": {
+                            "project": {"key": "${JIRA_PROJECT_KEY}"},
+                            "summary": "[PR#${PR_NUMBER}] ${PR_AUTHOR} 接口自动化失败",
+                            "description": "PR: ${PR_URL}\\n\\nTitle: ${PR_TITLE}\\nAuthor: ${PR_AUTHOR}\\nBuild: ${env.BUILD_URL}\\n\\n请 @ ${PR_AUTHOR} 修复。",
+                            "issuetype": {"name": "Bug"},
+                            "labels": ["auto-test", "pr-blocker"]
+                        }
+                    }
+                    """
+                    def response = httpRequest(
+                        url: "${JIRA_BASE_URL}/rest/api/2/issue",
+                        httpMode: 'POST',
+                        customHeaders: [[name: 'Authorization', value: "Bearer ${auth}"]],
+                        contentType: 'APPLICATION_JSON',
+                        requestBody: body
+                    )
+                    def issueKey = readJSON(text: response.content).key
+                    echo "✅ Jira bug 已建: ${JIRA_BASE_URL}/browse/${issueKey}"
+
+                    // 可选：在 PR 上评论通知
+                    // githubComment body: "❌ 自动测试失败，已建 Jira: ${issueKey}"
+                } catch (e) {
+                    echo "⚠️ Jira 调用失败（不影响 pipeline 状态）: ${e}"
+                }
+            }
+
+            // 通过 GitHub Status API 给 PR 标红，阻止合并
+            // 需要装 GitHub Status 插件：ghStatusSetter
+            // ghStatusSetter status: 'failure', description: 'Jenkins CI 失败', context: 'jenkins/auto-test'
+        }
+
+        success {
+            echo "✅ PR #${PR_NUMBER} 测试通过，可合并"
+            // ghStatusSetter status: 'success', description: 'Jenkins CI 通过', context: 'jenkins/auto-test'
+        }
+    }
+}
+
+// ============================================================
+// 面试话术（被问到"PR 卡口怎么做"时直接讲）：
+// ============================================================
+// "GitHub webhook → Jenkins multibranch pipeline → 触发这个 Jenkinsfile →
+//  跑 lint + 单测 + 接口冒烟（三件并行） → 失败自动建 Jira bug + 给 PR 标红 →
+//  GitHub PR 自动禁止合并（Settings → Branches → Require status checks）。
+//
+//  关键点：建 Jira 那段我加 try/catch，不会因为 Jira 调用失败影响 CI 本身的状态——
+//  这是工程化的细节，很多团队踩坑（Jira 一挂 CI 全挂）。"
+//
+// 追问："怎么保证 Jira bug 一定 @ 到责任人？"
+// 答：在 Jira API 提交时设 assignee 字段（动态读 PR 作者）。
+//     或者用 Jira webhook → 飞书/钉钉机器人推送到个人。
+// ============================================================

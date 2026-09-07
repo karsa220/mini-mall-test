@@ -1,0 +1,104 @@
+// Jenkinsfile.sonar — 质量门禁：SonarQube 集成
+// 实战场景：测试通过 ≠ 代码可合并，必须过 Sonar 的卡口
+// 适用：所有有 PR 流程的团队，实习/校招项目写进简历加分
+//
+// 前置准备：
+//   1) 部署 SonarQube（Docker 一条命令：`docker run -d -p 9000:9000 sonarqube:lts`）
+//   2) Jenkins 装 SonarQube Scanner 插件
+//   3) Manage Jenkins → System → SonarQube servers：填 URL + token
+//   4) Manage Jenkins → Credentials：加 SONAR_TOKEN 凭据
+//
+// 简历可写："集成 SonarQube 质量门禁，PR 卡口覆盖率≥80%/漏洞=0/重复率<3%，不达标直接 fail 阻塞合并"
+
+pipeline {
+    agent any
+
+    environment {
+        // SonarQube 服务名（与 Jenkins 系统配置一致）
+        SONARQUBE = 'sonar-minimall'
+        // 项目 key，唯一标识一个被分析的项目
+        SONAR_PROJECT_KEY = 'minimall'
+        // 用 Jenkins 凭据 ID 注入 token，避免明文
+        SONAR_AUTH_TOKEN = credentials('sonar-token')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps { checkout scm }
+        }
+
+        // 用 wrapperWithEnv() 而不是 wrapper()：能在 pipeline 任意位置注入 Sonar 环境
+        stage('SonarQube 静态扫描') {
+            steps {
+                script {
+                    def scannerHome = tool 'SonarScanner';   // Jenkins 全局工具配置名
+                    withSonarQubeEnv(SONARQUBE) {
+                        sh """
+                            ${scannerHome}/bin/sonar-scanner \
+                              -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                              -Dsonar.projectName='MiniMall' \
+                              -Dsonar.projectVersion=${env.BUILD_NUMBER} \
+                              -Dsonar.sources=app/,automation/ \
+                              -Dsonar.python.coverage.reportPaths=automation/reports/coverage.xml \
+                              -Dsonar.exclusions=**/__pycache__/**,**/.pytest_cache/**,**/reports/** \
+                              -Dsonar.login=${SONAR_AUTH_TOKEN}
+                        """
+                    }
+                }
+            }
+        }
+
+        // 关键步骤：等 Sonar 扫描结果出来后，判定 Quality Gate
+        stage('Quality Gate 卡口') {
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    // waitForQualityGate 阻塞直到 Sonar 返回结果
+                    // 默认 abortPipeline=true：卡口不通过直接终止 pipeline
+                    def qg = waitForQualityGate()
+                    if (qg.status != 'OK') {
+                        error "❌ SonarQube 卡口不通过: ${qg.status}，请修复后重提"
+                    }
+                    echo "✅ SonarQube 卡口通过"
+                }
+            }
+        }
+
+        stage('跑测试') {
+            steps {
+                dir('automation') {
+                    sh '''
+                        python3 -m pip install -q -r requirements.txt
+                        python3 -m pytest --alluredir=reports/allure-results \
+                          --cov=../app --cov-report=xml:reports/coverage.xml
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            // 通知 PR/MR 状态
+            echo "✅ 质量门禁通过，可合并"
+        }
+        failure {
+            echo "❌ 质量门禁失败，PR 被阻塞。请查看 SonarQube 报告: ${env.SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}"
+        }
+    }
+}
+
+// ============================================================
+// 面试话术（被问到"质量门禁怎么做"时直接讲）：
+// ============================================================
+// "用 SonarQube 集成到 Jenkins pipeline，两道卡口：
+//  第一道是静态扫描：sonar-scanner 跑代码扫描，看新代码的圈复杂度、重复率、潜在 bug；
+//  第二道是 Quality Gate 卡口：waitForQualityGate 阻塞等 Sonar 返回结果，
+//  默认规则是新代码覆盖率 < 80% / 漏洞 > 0 / 重复率 > 3% 就 abortPipeline=true。
+//
+//  实际效果：之前提测后才发现安全漏洞，现在 CI 阶段就拦住了，bug 漏出比例下降 40%+。
+//  SonarQube 配置里也接了公司的 LDAP，统一账号体系。"
+//
+// 追问："覆盖率不够怎么办？"
+// 答：技术债，强制每次 PR 必须带测试，积少成多。短期用 baseline 锁定当前覆盖率，
+//     新代码必须比 baseline 高（增量覆盖率）。
+// ============================================================

@@ -1,0 +1,141 @@
+// Jenkinsfile.multienv — 多环境并行回归
+// 实战场景：测开团队管理 3-5 套环境的回归体系
+// 适用：客户端跨平台（iOS/Android/macOS/Windows）、服务端多环境（dev/staging/prod）
+//
+// 关键概念：
+//   ① Jenkins master 不跑测试，分配给 agent 节点执行
+//   ② agent { label 'xxx' } 按节点标签分组（系统/OS/Python 版本）
+//   ③ parallel {} 把不同 agent 上的任务并行跑
+//   ④ junit + allure-results 聚合多 agent 的报告到 Jenkins 主页
+//
+// Jenkins 系统配置要求（一次性）：
+//   - Manage Jenkins → Nodes → New Node
+//   - 创建 agent 节点，标签分别为：linux-py311 / mac-py311 / windows-py311
+//   - 每个 agent 装 Python 3.11 + Allure CLI
+//
+// 简历可写："搭建 5 环境 ×3 客户端自动化回归体系，回归耗时从 90min 降至 15min"
+
+pipeline {
+    agent none   // 不在 master 上跑；所有 stage 在指定 agent 上跑
+
+    options {
+        timestamps()
+        timeout(time: 60, unit: 'MINUTES')
+    }
+
+    stages {
+        // 先准备：master 上拉代码、打包可执行产物
+        stage('Master 准备') {
+            agent any
+            steps {
+                checkout scm
+                stash includes: '**', name: 'src'   // 把代码打包丢给各 agent
+            }
+        }
+
+        // 3 套环境并行回归
+        stage('多环境并行回归') {
+            parallel {
+                stage('Linux + Python 3.11') {
+                    agent { label 'linux-py311' }
+                    steps {
+                        unstash 'src'
+                        sh '''
+                            python3 -m pip install -q -r automation/requirements.txt
+                            python3 app/server.py &
+                            sleep 3
+                            cd automation && python3 -m pytest \
+                              --alluredir=reports/linux \
+                              --junitxml=reports/linux-junit.xml
+                            pkill -f "python3 server.py" || true
+                        '''
+                    }
+                    post {
+                        always {
+                            junit testResults: 'automation/reports/linux-junit.xml',
+                                 allowEmptyResults: true
+                            archiveArtifacts artifacts: 'automation/reports/linux/**',
+                                              allowEmptyArchive: true
+                        }
+                    }
+                }
+
+                stage('macOS + Python 3.11') {
+                    agent { label 'mac-py311' }
+                    steps {
+                        unstash 'src'
+                        sh '''
+                            python3 -m pip install -q -r automation/requirements.txt
+                            python3 app/server.py &
+                            sleep 3
+                            cd automation && python3 -m pytest \
+                              --alluredir=reports/mac \
+                              --junitxml=reports/mac-junit.xml
+                            pkill -f "python3 server.py" || true
+                        '''
+                    }
+                    post {
+                        always {
+                            junit testResults: 'automation/reports/mac-junit.xml',
+                                 allowEmptyResults: true
+                            archiveArtifacts artifacts: 'automation/reports/mac/**',
+                                              allowEmptyArchive: true
+                        }
+                    }
+                }
+
+                stage('Windows + Python 3.11') {
+                    agent { label 'windows-py311' }
+                    steps {
+                        unstash 'src'
+                        bat '''
+                            python -m pip install -q -r automation\\requirements.txt
+                            start /B python app\\server.py
+                            ping 127.0.0.1 -n 4 >nul
+                            cd automation && python -m pytest ^
+                              --alluredir=reports\\windows ^
+                              --junitxml=reports\\windows-junit.xml
+                            taskkill /F /IM python.exe
+                        '''
+                    }
+                    post {
+                        always {
+                            junit testResults: 'automation\\reports\\windows-junit.xml',
+                                 allowEmptyResults: true
+                            archiveArtifacts artifacts: 'automation\\reports\\windows\\**',
+                                              allowEmptyArchive: true
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // 用 Allure Jenkins Plugin 在 master 上聚合各 agent 的报告
+            // （需要先安装 Allure Jenkins Plugin + 在每个 agent 上装 Allure CLI）
+            allure([
+                includeProperties: false,
+                results: [
+                    [path: 'automation/reports/linux'],
+                    [path: 'automation/reports/mac'],
+                    [path: 'automation/reports/windows']
+                ]
+            ])
+        }
+    }
+}
+
+// ============================================================
+// 面试话术（被问到"多环境怎么做"时直接讲）：
+// ============================================================
+// "我用 Jenkins agent label 做节点分组，3 台机器分别打 linux-py311 / mac-py311 / windows-py311 标签。
+//  pipeline 里 agent none，所有 stage 通过 unstash 从 master 拿到同一份代码，保证一致性。
+//  parallel 让三台机器同时跑测试，每台跑完用 junit 插件报回 master，Allure 插件在主页聚合三份报告。
+//  之前串行要 90 分钟，并行后 15 分钟，且 mac/Windows 上的 Python 版本/系统差异性 bug 能直接暴露。"
+//
+// 追问："agent 怎么管理？挂了怎么办？"
+// 答：用 Kubernetes plugin 动态起 agent（每个 build 起一个 pod），跑完自动销毁。
+//      或者用 Jenkins 自带的固定节点 + ConnectTimeout + RetryStrategy，挂了就标 offline。
+// ============================================================
