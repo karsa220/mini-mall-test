@@ -192,6 +192,47 @@ def order_list():
     return resp(0, "success", mine)
 
 
+# ---------------- H5 测试入口（Appium 跑这个页面） ----------------
+@app.route('/')
+def index():
+    """迷你 H5 登录页：Appium 操作这个页面就能验证接口 + 表单自动化"""
+    return '''
+    <!DOCTYPE html>
+    <html lang="zh">
+    <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+        <title>MiniMall H5</title>
+    </head>
+    <body style="font-family:system-ui;padding:24px;max-width:480px;margin:auto">
+      <h1 style="color:#333">MiniMall 测试入口</h1>
+      <p style="color:#666;font-size:14px">Appium 移动端 UI 自动化测试对象</p>
+      <label>用户名</label><br>
+      <input id="username" value="alice" style="width:100%;padding:10px;margin:6px 0;box-sizing:border-box"><br>
+      <label>密码</label><br>
+      <input id="password" type="password" value="password123" style="width:100%;padding:10px;margin:6px 0;box-sizing:border-box"><br>
+      <button id="btn_login" style="padding:12px 24px;margin-top:8px;background:#1677ff;color:#fff;border:0;border-radius:6px">登录</button>
+      <pre id="result" style="background:#f5f5f5;padding:12px;margin-top:16px;white-space:pre-wrap;word-break:break-all"></pre>
+      <script>
+        document.getElementById("btn_login").onclick = async () => {
+          const u = document.getElementById("username").value;
+          const p = document.getElementById("password").value;
+          document.getElementById("result").innerText = "登录中...";
+          try {
+            const r = await fetch("/api/login", {
+              method: "POST",
+              headers: {"Content-Type": "application/json"},
+              body: JSON.stringify({username: u, password: p})
+            });
+            const data = await r.json();
+            document.getElementById("result").innerText = JSON.stringify(data, null, 2);
+          } catch (e) {
+            document.getElementById("result").innerText = "请求失败: " + e;
+          }
+        };
+      </script>
+    </body></html>
+    '''
+
+
 if __name__ == "__main__":
     # 监听 0.0.0.0 才能让真机/模拟器通过电脑 IP 访问到（手机抓包的硬前提）
     app.run(host="0.0.0.0", port=5000, debug=False)
