@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# pytest / allure
+.pytest_cache/
+reports/allure-results/
+reports/allure-report/
+allure-results/
+allure-report/
+*.xml
+
+# IDE / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 抓包证据（体积大，单独存本地即可，不推仓库）
+*.chls
+*.saz
+*.har
+
+# 临时文件
+*.log
+*.tmp

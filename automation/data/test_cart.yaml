@@ -1,0 +1,38 @@
+# 加购数量边界值用例（商品3库存=5）
+- case_id: CART-01
+  title: 最小有效数量1
+  product_id: 3
+  quantity: 1
+  expect_code: 0
+
+- case_id: CART-02
+  title: 等于库存上限5
+  product_id: 3
+  quantity: 5
+  expect_code: 0
+
+- case_id: CART-03
+  title: 超出库存6
+  product_id: 3
+  quantity: 6
+  expect_code: 2003
+
+- case_id: CART-04
+  title: 数量为0应被拒绝
+  product_id: 3
+  quantity: 0
+  expect_code: 2002
+  xfail_bug: BUG-001
+
+- case_id: CART-05
+  title: 数量为负数应被拒绝
+  product_id: 3
+  quantity: -1
+  expect_code: 2002
+  xfail_bug: BUG-001
+
+- case_id: CART-06
+  title: 非数字类型
+  product_id: 3
+  quantity: "a"
+  expect_code: 2002
