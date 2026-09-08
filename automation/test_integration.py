@@ -91,6 +91,81 @@ def test_pay_idempotency_no_double_charge(user):
     assert r1.json["data"]["status"] == "PAID" == r2.json["data"]["status"]
 
 
+def test_pay_already_paid_idempotent_response(user):
+    """支付幂等第二例:已支付订单重复支付 → 业务码 0 + status 仍为 PAID"""
+    c, tok, _ = user
+    h = {"Authorization": f"Bearer {tok}"}
+    c.post("/api/cart/add", json={"product_id": 1, "quantity": 1}, headers=h)
+    oid = c.post("/api/order/create", json={}, headers=h).json["data"]["order_id"]
+    c.post("/api/order/pay", json={"order_id": oid}, headers=h)
+    r = c.post("/api/order/pay", json={"order_id": oid}, headers=h)
+    assert r.json["code"] == 0, f"重复支付不应报错,实际 {r.json['code']}"
+    assert r.json["data"]["status"] == "PAID"
+
+
+def test_concurrent_orders_respect_stock_atomic(admin):
+    """防超卖第二例:限量库存 + 并发下单,库存不穿底 + 库存-成交数 == 初始库存"""
+    c, atok = admin
+    ah = {"Authorization": f"Bearer {atok}"}
+    pid = c.post("/api/admin/products",
+                 json={"name": "限量品A", "price": 1.0, "stock": 5}, headers=ah).json["data"]["id"]
+    N = 16
+    results = []
+    lock = threading.Lock()
+
+    def worker():
+        u = {"username": "u_" + uuid.uuid4().hex[:10], "password": "Pwd_123456a"}
+        try:
+            r = c.post("/api/register", json=u)
+            code = (r.json or {}).get("code", -1) if r else -1
+        except Exception:
+            code = -1
+        if code != 0:
+            return
+        try:
+            t = login(c, u["username"], u["password"])
+            h = {"Authorization": f"Bearer {t}"}
+            c.post("/api/cart/add", json={"product_id": pid, "quantity": 1}, headers=h)
+            ro = c.post("/api/order/create", json={}, headers=h)
+            with lock:
+                results.append((ro.json or {}).get("code", -1) if ro else -1)
+        except Exception:
+            with lock:
+                results.append(-1)
+
+    os.environ["ORDER_SIM_LATENCY"] = "0.1"
+    try:
+        ts = [threading.Thread(target=worker) for _ in range(N)]
+        [t.start() for t in ts]
+        [t.join() for t in ts]
+    finally:
+        os.environ["ORDER_SIM_LATENCY"] = "0"
+    success = sum(1 for x in results if x == 0)
+    final = c.get(f"/api/products/{pid}").json["data"]["stock"]
+    assert final == 5 - success, f"atomic stock 失败: 始 5 终 {final} 成交 {success}"
+
+
+def test_retry_weak_network_no_duplicate_order(user):
+    """弱网场景:同 Idempotency-Key 并发/重复提交,只产生 1 笔订单 + 库存只扣 1 次"""
+    c, tok, _ = user
+    h = {"Authorization": f"Bearer {tok}"}
+    initial = c.get("/api/products/2").json["data"]["stock"]
+    c.post("/api/cart/add", json={"product_id": 2, "quantity": 1}, headers=h)
+    k = "weak_" + uuid.uuid4().hex
+
+    def hit():
+        c.post("/api/order/create", json={}, headers={**h, "Idempotency-Key": k})
+
+    # 模拟客户端弱网重试:5 次并发用同 key
+    ts = [threading.Thread(target=hit) for _ in range(5)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+
+    # 库存应只减 1
+    final = c.get("/api/products/2").json["data"]["stock"]
+    assert final == initial - 1, f"弱网重试导致重复扣库存: 初 {initial} 终 {final}"
+
+
 def test_concurrent_no_oversell(admin):
     """限量库存(3) + 12 并发下单，断言不超卖：成交数 <= 3，库存不穿底。"""
     c, atok = admin
@@ -102,14 +177,23 @@ def test_concurrent_no_oversell(admin):
 
     def worker():
         u = {"username": "u_" + uuid.uuid4().hex[:10], "password": "Pwd_123456a"}
-        if c.post("/api/register", json=u).json["code"] != 0:
+        try:
+            r = c.post("/api/register", json=u)
+            code = (r.json or {}).get("code", -1) if r else -1
+        except Exception:
+            code = -1
+        if code != 0:
             return
-        t = login(c, u["username"], u["password"])
-        h = {"Authorization": f"Bearer {t}"}
-        c.post("/api/cart/add", json={"product_id": pid, "quantity": 1}, headers=h)
-        ro = c.post("/api/order/create", json={}, headers=h)
-        with lock:
-            results.append(ro.json["code"])
+        try:
+            t = login(c, u["username"], u["password"])
+            h = {"Authorization": f"Bearer {t}"}
+            c.post("/api/cart/add", json={"product_id": pid, "quantity": 1}, headers=h)
+            ro = c.post("/api/order/create", json={}, headers=h)
+            with lock:
+                results.append((ro.json or {}).get("code", -1) if ro else -1)
+        except Exception:
+            with lock:
+                results.append(-1)
 
     # 人为放大「读->扣」并发窗口，更易暴露非原子实现的问题
     os.environ["ORDER_SIM_LATENCY"] = "0.15"

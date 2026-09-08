@@ -3,7 +3,8 @@
 > 一个可独立运行的"测试开发日常实习"级别完整交付物：被测系统 + 测试文档 + 接口自动化 + Allure 报告 + Jenkins CI + 抓包实践，专为简历和面试准备设计。
 
 ![API Test](https://img.shields.io/badge/API%20Test-pytest%20%2B%20allure-blue)
-![Coverage](https://img.shields.io/badge/Cases-76%20(73%20passed%20%2B%203%20gates)-brightgreen)
+![Coverage](https://img.shields.io/badge/Cases-86%20(82%20biz%20%2B%204%20cov)-brightgreen)
+![Coverage](https://img.shields.io/badge/Business%20Coverage-22%2F22%20dim-success)
 ![Coverage](https://img.shields.io/badge/Coverage-89%25-green)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![CI](https://img.shields.io/badge/CI-Jenkins-D24939)

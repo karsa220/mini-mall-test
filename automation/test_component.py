@@ -289,20 +289,83 @@ def test_order_pay_others_forbidden(user):
     assert c.post("/api/order/pay", json={"order_id": oid}, headers={"Authorization": f"Bearer {t2}"}).json["code"] == 4002
 
 
-def test_order_cancel_and_refund_state_machine(user):
+def test_cancel_unpaid_order_succeeds(user):
+    """订单状态机:UNPAID 可被取消(正向路径)"""
     c, tok, _ = user
     h = {"Authorization": f"Bearer {tok}"}
     c.post("/api/cart/add", json={"product_id": 1, "quantity": 1}, headers=h)
     oid = c.post("/api/order/create", json={}, headers=h).json["data"]["order_id"]
-    assert c.post(f"/api/order/{oid}/cancel", headers=h).json["code"] == 0
-    # 已取消订单不可支付
-    assert c.post("/api/order/pay", json={"order_id": oid}, headers=h).json["code"] == 4003
-    # 重新走支付->退款
+    r = c.post(f"/api/order/{oid}/cancel", headers=h)
+    assert r.json["code"] == 0
+    assert r.json["data"]["status"] == "CANCELLED"
+
+
+def test_pay_cancelled_order_blocked(user):
+    """订单状态机:非法转移 CANCELLED -> PAID 须被业务码拒"""
+    c, tok, _ = user
+    h = {"Authorization": f"Bearer {tok}"}
     c.post("/api/cart/add", json={"product_id": 1, "quantity": 1}, headers=h)
-    oid2 = c.post("/api/order/create", json={}, headers=h).json["data"]["order_id"]
-    assert c.post("/api/order/pay", json={"order_id": oid2}, headers=h).json["code"] == 0
-    assert c.post(f"/api/order/{oid2}/refund", headers=h).json["code"] == 0
-    assert c.post(f"/api/order/{oid2}/refund", headers=h).json["code"] == 4005  # 重复退款
+    oid = c.post("/api/order/create", json={}, headers=h).json["data"]["order_id"]
+    c.post(f"/api/order/{oid}/cancel", headers=h)
+    r = c.post("/api/order/pay", json={"order_id": oid}, headers=h)
+    assert r.json["code"] == 4003, f"已取消订单禁止支付,实际业务码 {r.json['code']}"
+
+
+def test_refund_unpaid_order_blocked(user):
+    """订单状态机:UNPAID 退款须被拒(必须先支付再退)"""
+    c, tok, _ = user
+    h = {"Authorization": f"Bearer {tok}"}
+    c.post("/api/cart/add", json={"product_id": 1, "quantity": 1}, headers=h)
+    oid = c.post("/api/order/create", json={}, headers=h).json["data"]["order_id"]
+    r = c.post(f"/api/order/{oid}/refund", headers=h)
+    assert r.json["code"] == 4005, f"UNPAID 退款须被拒,实际 {r.json['code']}"
+
+
+def test_refund_already_refunded_blocked(user):
+    """订单状态机:REFUNDED 重复退款须被拒(防重复退款资损)"""
+    c, tok, _ = user
+    h = {"Authorization": f"Bearer {tok}"}
+    c.post("/api/cart/add", json={"product_id": 1, "quantity": 1}, headers=h)
+    oid = c.post("/api/order/create", json={}, headers=h).json["data"]["order_id"]
+    assert c.post("/api/order/pay", json={"order_id": oid}, headers=h).json["code"] == 0
+    assert c.post(f"/api/order/{oid}/refund", headers=h).json["code"] == 0
+    # 重复退款须被业务码 4005 拦截
+    r = c.post(f"/api/order/{oid}/refund", headers=h)
+    assert r.json["code"] == 4005, f"重复退款须拒,实际 {r.json['code']}"
+
+
+def test_pay_unpaid_order_succeeds(user):
+    """订单状态机正向:UNPAID -> PAID (支付主路径)"""
+    c, tok, _ = user
+    h = {"Authorization": f"Bearer {tok}"}
+    c.post("/api/cart/add", json={"product_id": 1, "quantity": 1}, headers=h)
+    oid = c.post("/api/order/create", json={}, headers=h).json["data"]["order_id"]
+    r = c.post("/api/order/pay", json={"order_id": oid}, headers=h)
+    assert r.json["code"] == 0
+    assert r.json["data"]["status"] == "PAID"
+
+
+def test_paid_then_refund_succeeds(user):
+    """订单状态机正向:PAID -> REFUNDED (完整退款流程)"""
+    c, tok, _ = user
+    h = {"Authorization": f"Bearer {tok}"}
+    c.post("/api/cart/add", json={"product_id": 1, "quantity": 1}, headers=h)
+    oid = c.post("/api/order/create", json={}, headers=h).json["data"]["order_id"]
+    assert c.post("/api/order/pay", json={"order_id": oid}, headers=h).json["code"] == 0
+    r = c.post(f"/api/order/{oid}/refund", headers=h)
+    assert r.json["code"] == 0
+    assert r.json["data"]["status"] == "REFUNDED"
+
+
+def test_paid_then_cancel_not_allowed(user):
+    """订单状态机:PAID 状态不可直接 cancel(必须走 refund)"""
+    c, tok, _ = user
+    h = {"Authorization": f"Bearer {tok}"}
+    c.post("/api/cart/add", json={"product_id": 1, "quantity": 1}, headers=h)
+    oid = c.post("/api/order/create", json={}, headers=h).json["data"]["order_id"]
+    c.post("/api/order/pay", json={"order_id": oid}, headers=h)
+    r = c.post(f"/api/order/{oid}/cancel", headers=h)
+    assert r.json["code"] == 4004, f"已支付订单取消须被拒,实际 {r.json['code']}"
 
 
 def test_order_detail_others_forbidden(user):
