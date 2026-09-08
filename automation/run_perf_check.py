@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import time
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = os.environ.get("PY", r"C:\Users\bfdym\.workbuddy\binaries\python\envs\mini-mall-test\Scripts\python.exe")
@@ -40,6 +41,8 @@ def free_port(port):
 def start_server():
     env = dict(os.environ)
     env["ORDER_SIM_LATENCY"] = "0"
+    # 独立临时库：每次压测从播种状态开始，避免历史运行耗尽库存
+    env["MINIMALL_DB"] = os.path.join(tempfile.gettempdir(), f"mm_perf_{os.getpid()}.db")
     p = subprocess.Popen([PY, os.path.join(ROOT, "app", "server.py")],
                          cwd=ROOT, env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

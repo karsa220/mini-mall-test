@@ -3,7 +3,8 @@
 > 一个可独立运行的"测试开发日常实习"级别完整交付物：被测系统 + 测试文档 + 接口自动化 + Allure 报告 + Jenkins CI + 抓包实践，专为简历和面试准备设计。
 
 ![API Test](https://img.shields.io/badge/API%20Test-pytest%20%2B%20allure-blue)
-![Coverage](https://img.shields.io/badge/Cases-21%20(17%20passed%20%2B%204%20xfail)-brightgreen)
+![Coverage](https://img.shields.io/badge/Cases-76%20(73%20passed%20%2B%203%20gates)-brightgreen)
+![Coverage](https://img.shields.io/badge/Coverage-89%25-green)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-blue)
 ![CI](https://img.shields.io/badge/CI-Jenkins-D24939)
 ![Container](https://img.shields.io/badge/Container-Docker-2496ED)
@@ -23,18 +24,21 @@
 
 ## 企业级测试能力矩阵（对标大厂测开 JD）
 
-> 已按字节/大厂测开 JD 补齐「性能/混沌/覆盖率/造数/可观测性」等工程化能力，详见 `docs/14-企业级测试体系.md` 与 `docs/15-字节测开-JD与面经.md`。
+> 被测系统已重构为**真实关系型电商后端**（SQLAlchemy + SQLite，22 个端点），测试升级为**四层测试金字塔**（单元/组件/集成/安全，73 例 + 3 项企业级门禁），覆盖率 89%。详见 `docs/14-企业级测试体系.md` 与 `docs/15-字节测开-JD与面经.md`。
 
 | 能力 | 实现 | 门禁/产出 | 文件 |
 |---|---|---|---|
-| 分层测试金字塔 | 单元(纯函数)+组件(Flask test client)+接口+UI | 单元/组件覆盖 69% | `test_unit.py` `test_api_server.py` |
-| **性能压测** | Locust 交易主链路，解析 P95/错误率 | p95≤800ms、错误率≤1% 卡 CI | `perf_test.py` `run_perf_check.py` |
-| **混沌/高可用** | `/api/chaos` 应用级 + mitmproxy 网络级 504 | 故障被感知/降级 | `server.py` `mitmproxy_chaos_addon.py` |
-| **覆盖率门禁** | pytest-cov 行覆盖 | `--cov-fail-under=60` | `Jenkinsfile` |
+| 真实被测系统 | SQLAlchemy+SQLite，用户/地址/商品/购物车/优惠券/订单/幂等键 7 领域 22 端点 | 可并发、可落库 | `app/db.py` `app/promotion.py` `app/server.py` |
+| 分层测试金字塔 | 单元(促销引擎15)+组件(全端点38)+集成(6)+安全(7)+冒烟(5) | 73 例全绿，覆盖 89% | `test_unit/component/integration/security.py` |
+| **交易一致性** | 原子扣库存防超卖 + 优惠券原子核销 + Idempotency-Key 幂等 | 并发竞态测试断言不超卖/不重复扣款 | `test_integration.py` |
+| **性能压测** | Locust 交易主链路（注册/浏览/加购/下单/支付），解析 P95/错误率 | p95≤800ms、错误率≤1% 卡 CI | `perf_test.py` `run_perf_check.py` |
+| **混沌/高可用** | `/api/chaos` 应用级 + mitmproxy 网络级 504 | 故障被感知/降级 + 幂等重试验证 | `server.py` `run_chaos_check.py` |
+| **安全专项** | 越权/伪造token/SQL注入/弱口令/暴力破解限流/敏感字段 | 全部拒绝或限流 | `test_security.py` |
+| **覆盖率门禁** | pytest-cov 行覆盖（server+db+promotion） | `--cov-fail-under=80` | `Jenkinsfile` |
 | **测试数据工厂** | 合成数据 + 每用例独立命名空间 | 解决数据污染 | `data_factory.py` |
 | **契约守护** | HAR 契约 diff（消费者驱动契约等价） | 破坏性变更退出码非0 | `har_contract_diff.py` |
-| **可观测性** | `/metrics`：QPS/错误率/时延分位 | 质量仪表盘输入 | `server.py` |
-| CI 质量门禁 | Jenkins 并行门禁 + SonarQube | fail fast | `Jenkinsfile` |
+| **可观测性** | `/metrics`：QPS/错误率/时延 | 质量仪表盘输入 | `server.py` |
+| CI 质量门禁 | Jenkins 四层并行 + 性能/混沌/覆盖率门禁 | fail fast | `Jenkinsfile` |
 
 ## 项目结构
 
@@ -42,17 +46,25 @@
 testdev-portfolio/
 ├── README.md                         # 本文件（项目总览 + JD 映射）
 ├── app/
-│   ├── server.py                     # MiniMall 后端（被测系统，含 3 个预埋 bug）
-│   └── requirements.txt
-├── automation/                       # 接口自动化
-│   ├── conftest.py                   # 共享 fixture（登录、清空购物车）
-│   ├── data/test_login.yaml          # 登录用例数据驱动
-│   ├── data/test_cart.yaml           # 购物车边界值数据驱动
-│   ├── test_api_login.py             # 登录接口用例
-│   ├── test_api_cart.py              # 购物车接口用例（含 xfail）
-│   ├── test_api_order.py             # 下单/支付/优惠券用例（含 xfail）
+│   ├── server.py                     # MiniMall 后端（被测系统，22 端点，含 2 个预埋 bug）
+│   ├── db.py                         # SQLAlchemy 模型 + SQLite 持久化 + 播种
+│   ├── promotion.py                  # 促销引擎（满减/折扣/品类/叠加/有效期，纯函数）
+│   └── requirements.txt              # flask + sqlalchemy + websockets
+├── automation/                       # 接口自动化（四层金字塔 + 企业级门禁）
+│   ├── conftest.py                   # 共享 fixture（HTTP/session 层）
+│   ├── _tutil.py                     # 进程内 test_client + 用例级隔离
+│   ├── data_factory.py               # 测试数据工厂（合成/边界/隔离）
+│   ├── test_unit.py                  # 单元层：促销引擎（15 例）
+│   ├── test_component.py             # 组件层：全端点正负边界（38 例）
+│   ├── test_integration.py           # 集成层：幂等/并发防超卖/防重复核销（6 例）
+│   ├── test_security.py              # 安全层：越权/注入/限流（7 例）
+│   ├── test_api_server.py            # 冒烟（5 例）
+│   ├── test_enterprise.py            # 企业级门禁统一入口（性能/混沌/契约）
+│   ├── perf_test.py + run_perf_check.py    # Locust 性能门禁
+│   ├── run_chaos_check.py + mitmproxy_*_addon.py  # 混沌/抓包/Mock
+│   ├── har_contract_diff.py          # HAR 契约 diff
 │   ├── pytest.ini
-│   └── requirements.txt              # pytest+requests+allure-pytest
+│   └── requirements.txt              # pytest+requests+allure+locust+mitmproxy+sqlalchemy
 ├── reports/                          # ⭐ Allure 结果（自动生成）
 │   ├── allure-results/               # 原始 JSON
 │   └── allure-report/                # HTML 报告（CI 生成）
@@ -83,11 +95,12 @@ testdev-portfolio/
 ```bash
 # 1. 启动被测系统
 python -m venv .venv && .venv\Scripts\activate
-pip install flask pytest requests pyyaml
+pip install flask sqlalchemy pytest requests pyyaml
 python app/server.py          # 启动后访问 http://127.0.0.1:5000
 
-# 2. 另开终端，跑接口自动化
-cd automation && pytest        # 看到 "17 passed, 4 xfailed" 即正常
+# 2. 另开终端，跑四层接口自动化（进程内，无需起服务）
+cd automation && pytest test_unit.py test_component.py test_integration.py test_security.py
+# 期望 "73 passed"（含 3 项企业级门禁则 76 passed）
 
 # 3. 跑 + 生成 Allure HTML 报告（推荐）
 cd automation
@@ -133,7 +146,7 @@ docker run -d --name jenkins -p 8080:8080 -p 50000:50000 ^
 ## 快速产出面试话术
 
 **讲项目**（90 秒版）：
-> 这个项目是 MiniMall 电商 V1.0，我从需求评审介入，提了 6 个问题，其中"优惠券门槛边界"和"下单幂等"两个疑问在提测后命中为 P0 缺陷（BUG-002、003）。独立负责交易链路方向，设计了 36 条用例，跑出 17 个自动化全通过 + 4 个预期 xfail。3 个缺陷都用 Charles 验证过证据，其中 BUG-003（下单无幂等令牌）是用 Repeat Advanced 并发重放结合代码确认的——单进程串行开发服务器因清购物车兜底仅 1 笔掩盖了缺陷，但在并行后端 + 弱网延迟下实测复现重复下单（8 并发→8 笔）。整套用 Python + pytest + requests + YAML 数据驱动搭建，可重复运行。
+> 这个项目是 MiniMall 电商后端，我把它从"内存字典的玩具 demo"升级成了真实可落库的企业级被测系统（SQLAlchemy + SQLite，22 个接口，覆盖用户/地址/商品/购物车/优惠券/订单/幂等键七大领域）。测试按金字塔分层：单元层覆盖促销引擎（满减/折扣/品类/叠加/有效期的等价类边界），组件层打满全部端点的正反用例，集成层用并发线程验证"防超卖、幂等下单、防优惠券重复核销"这些交易一致性，安全层做越权/注入/限流。再加上 Locust 性能门禁（p95≤800ms）、混沌故障注入、HAR 契约 diff、覆盖率 89% 卡 CI。总共 76 个用例全绿。这套东西直接对齐大厂测开 JD 里"功能/自动化/性能/安全/稳定性监控/流程改进"的完整闭环。
 
 **被追问"测试设计方法论"**：
 > 等价类 + 边界值用于输入域（登录、加购数量），场景法用于流程（下单支付全链路），判定表用于规则（优惠券），再叠加接口维度的异常（弱网、并发、越权）。每个用例的设计意图在 `04-测试用例设计.md` 里都写了。

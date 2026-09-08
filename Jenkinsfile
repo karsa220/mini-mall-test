@@ -53,7 +53,7 @@ pipeline {
                 stage('装服务依赖') {
                     steps {
                         dir('app') {
-                            sh 'python3 -m pip install --quiet --upgrade pip && python3 -m pip install --quiet flask'
+                            sh 'python3 -m pip install --quiet --upgrade pip && python3 -m pip install --quiet -r requirements.txt'
                         }
                     }
                 }
@@ -89,42 +89,50 @@ pipeline {
             }
         }
 
-        // ✅ 场景 6 核心：三组用例并行执行
+        // ✅ 场景 6 核心：四层测试金字塔并行执行（单元/组件/集成/安全）
         // 30 分钟 → 11 分钟，这是工程化最直接的收益
         stage('Run 接口自动化 (并行)') {
             steps {
                 script {
                     def tasks = [:]
 
-                    tasks['登录鉴权'] = {
+                    tasks['单元-促销引擎'] = {
                         dir('automation') {
                             sh '''
-                                python3 -m pytest test_api_login.py \
-                                  --alluredir=${ALLURE_RESULTS}-login \
+                                python3 -m pytest test_unit.py \
+                                  --alluredir=${ALLURE_RESULTS}-unit \
                                   --clean-alluredir=false
                             '''
                         }
                     }
 
-                    tasks['购物车'] = {
+                    tasks['组件-全端点'] = {
                         dir('automation') {
                             sh '''
-                                python3 -m pytest test_api_cart.py \
-                                  --alluredir=${ALLURE_RESULTS}-cart \
+                                python3 -m pytest test_component.py \
+                                  --alluredir=${ALLURE_RESULTS}-component \
                                   --clean-alluredir=false
                             '''
                         }
                     }
 
-                    // 参数化：可以选是否跳过优惠券用例
-                    def orderCmd = "python3 -m pytest test_api_order.py --alluredir=${ALLURE_RESULTS}-order --clean-alluredir=false"
-                    if (params.SKIP_COUPON) {
-                        orderCmd += " -k 'not coupon'"
+                    tasks['集成-交易一致性'] = {
+                        dir('automation') {
+                            sh '''
+                                python3 -m pytest test_integration.py \
+                                  --alluredir=${ALLURE_RESULTS}-integration \
+                                  --clean-alluredir=false
+                            '''
+                        }
                     }
 
-                    tasks['下单支付'] = {
+                    tasks['安全-专项'] = {
                         dir('automation') {
-                            sh orderCmd
+                            sh '''
+                                python3 -m pytest test_security.py \
+                                  --alluredir=${ALLURE_RESULTS}-security \
+                                  --clean-alluredir=false
+                            '''
                         }
                     }
 
@@ -177,9 +185,11 @@ pipeline {
                     steps {
                         dir('automation') {
                             sh '''
-                                # 单元层 + 组件层（Flask test client 进程内），覆盖率计入 app 模块
-                                python3 -m pytest test_unit.py test_api_server.py \
-                                  --cov=server --cov-report=xml --cov-fail-under=60
+                                # 四层测试（单元+组件+集成+安全），覆盖率计入 app 模块
+                                python3 -m pytest test_unit.py test_component.py \
+                                  test_integration.py test_security.py \
+                                  --cov=server --cov=db --cov=promotion \
+                                  --cov-report=xml --cov-fail-under=80
                             '''
                         }
                     }

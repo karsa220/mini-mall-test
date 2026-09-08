@@ -21,6 +21,7 @@ import sys
 import time
 import json
 import subprocess
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = os.environ.get("PY", r"C:\Users\bfdym\.workbuddy\binaries\python\envs\mini-mall-test\Scripts\python.exe")
@@ -81,8 +82,10 @@ def main():
     free_port(MITM_PORT)
     free_port(5001)  # 独立 WS server 端口，避免残留
 
-    # 起 server
-    server = subprocess.Popen([PY, "app/server.py"], cwd=ROOT,
+    # 起 server（独立临时库，避免历史运行耗尽库存影响抓包断言）
+    srv_env = os.environ.copy()
+    srv_env["MINIMALL_DB"] = os.path.join(tempfile.gettempdir(), f"mm_cap_{os.getpid()}.db")
+    server = subprocess.Popen([PY, "app/server.py"], cwd=ROOT, env=srv_env,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if not wait_server():
         print("ERROR: MiniMall server 未就绪")

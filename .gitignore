@@ -47,3 +47,7 @@ server.log
 
 # 报告（allure 重新生成）
 reports/
+
+# 数据库（运行时生成，每次从播种状态重建）
+*.db
+*.sqlite

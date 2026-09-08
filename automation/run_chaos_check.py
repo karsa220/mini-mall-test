@@ -16,6 +16,8 @@ import os
 import subprocess
 import sys
 import time
+import uuid
+import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PY = os.environ.get("PY", r"C:\Users\bfdym\.workbuddy\binaries\python\envs\mini-mall-test\Scripts\python.exe")
@@ -41,6 +43,8 @@ def free_port(port):
 def start_server():
     env = dict(os.environ)
     env["ORDER_SIM_LATENCY"] = "0"
+    # 独立临时库：每次混沌运行从播种状态开始，避免历史运行耗尽库存
+    env["MINIMALL_DB"] = os.path.join(tempfile.gettempdir(), f"mm_chaos_{os.getpid()}.db")
     p = subprocess.Popen([PY, os.path.join(ROOT, "app", "server.py")],
                          cwd=ROOT, env=env,
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -109,6 +113,31 @@ def scenario_network_fault(base, token):
         m.terminate()
 
 
+def scenario_idempotency(base, token):
+    """幂等正例：同 Idempotency-Key 重试下单返回同一笔订单、库存只扣一次；
+    已支付订单重复支付不重复扣款。证明 BUG-003（弱网重复下单）已被幂等令牌修复。"""
+    import requests
+    h = {"Authorization": f"Bearer {token}"}
+    requests.post(base + "/api/cart/add", json={"product_id": 1, "quantity": 1}, headers=h, timeout=5)
+    stock_before = requests.get(base + "/api/products/1", timeout=5).json()["data"]["stock"]
+    key = "idem_chaos_" + uuid.uuid4().hex
+    o2 = requests.post(base + "/api/order/create", json={},
+                       headers={**h, "Idempotency-Key": key}, timeout=5)
+    o3 = requests.post(base + "/api/order/create", json={},
+                       headers={**h, "Idempotency-Key": key}, timeout=5)  # 模拟弱网重试
+    same_order = (o2.status_code == 200 and o3.status_code == 200 and
+                  o2.json()["data"]["order_id"] == o3.json()["data"]["order_id"])
+    stock_after = requests.get(base + "/api/products/1", timeout=5).json()["data"]["stock"]
+    no_double_deduct = (stock_before - stock_after) == 1  # 只扣一次
+    paid1 = requests.post(base + "/api/order/pay",
+                          json={"order_id": o2.json()["data"]["order_id"]}, headers=h, timeout=5)
+    paid2 = requests.post(base + "/api/order/pay",
+                          json={"order_id": o2.json()["data"]["order_id"]}, headers=h, timeout=5)
+    pay_idem = paid1.status_code == 200 and paid2.status_code == 200 and \
+        paid1.json()["data"]["status"] == "PAID"
+    return same_order and no_double_deduct and pay_idem
+
+
 def main():
     free_port(SERVER_PORT)
     free_port(MITM_PORT)
@@ -120,8 +149,8 @@ def main():
         results = {}
         results["app_fault_injection"] = scenario_app_fault(base, token)
         results["network_fault_injection_504"] = scenario_network_fault(base, token)
-        # 幂等缺口说明：支付 504 时重试会重复下单（与 BUG-003 同源），需幂等令牌兜底
-        results["idempotency_gap"] = "支付超时重试会复现重复下单(BUG-003)，需服务端幂等令牌"
+        # BUG-003 修复验证：幂等令牌保证重试不重复下单/不重复扣款
+        results["idempotency_resilience"] = scenario_idempotency(base, token)
         out = os.path.join(ROOT, "automation", "chaos_report.json")
         with open(out, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)

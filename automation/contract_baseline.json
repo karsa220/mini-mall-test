@@ -3,17 +3,29 @@
     "token": "str"
   },
   "POST /api/cart/add": {
-    "1": "int",
-    "2": "int"
+    "items": "list",
+    "total": "float"
   },
   "POST /api/order/create": {
     "created_at": "str",
     "discount": "float",
-    "items": "dict",
+    "items": "list",
     "order_id": "str",
+    "order_no": "str",
+    "paid_at": "null",
     "payable": "float",
     "status": "str",
-    "total": "float",
-    "username": "str"
+    "total": "float"
+  },
+  "POST /api/order/pay": {
+    "created_at": "str",
+    "discount": "float",
+    "items": "list",
+    "order_id": "str",
+    "order_no": "str",
+    "paid_at": "str",
+    "payable": "float",
+    "status": "str",
+    "total": "float"
   }
 }

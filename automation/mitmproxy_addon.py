@@ -132,8 +132,8 @@ class MiniMallCapture:
                          isinstance(resp, dict) and bool((resp.get("data") or {}).get("order_id")),
                          {"order_id": (resp or {}).get("data", {}).get("order_id")})
         elif path.startswith("/api/order/pay"):
-            self._assert("pay", "支付响应 status=已支付",
-                         isinstance(resp, dict) and (resp.get("data") or {}).get("status") == "已支付",
+            self._assert("pay", "支付响应 status=PAID",
+                         isinstance(resp, dict) and (resp.get("data") or {}).get("status") == "PAID",
                          {"status": (resp or {}).get("data", {}).get("status")})
 
         self._dump_assert()
