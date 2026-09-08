@@ -13,7 +13,8 @@ import threading
 import time
 import os
 import uuid
-from flask import Flask, request, jsonify
+import random
+from flask import Flask, request, jsonify, g
 import websockets
 
 app = Flask(__name__)
@@ -376,6 +377,91 @@ def index():
       </script>
     </body></html>
     '''
+
+
+# ---------------- 混沌工程 / 故障注入（高可用测试） ----------------
+# 在 pre-prod / 测试中模拟服务宕机、网络延迟、随机错误，验证系统容错与降级。
+CHAOS = {"latency": 0.0, "error_rate": 0.0, "down": False, "error_code": 500}
+_CHAOS_LOCK = threading.Lock()
+
+
+@app.before_request
+def _chaos_inject():
+    """对 /api/* 业务接口注入故障；元数据/控制类接口本身不参与注入，避免自检死锁"""
+    p = request.path
+    if p.startswith("/api/chaos") or p in ("/metrics", "/"):
+        return
+    with _CHAOS_LOCK:
+        down = CHAOS["down"]
+        lat = CHAOS["latency"]
+        err_rate = CHAOS["error_rate"]
+        err_code = CHAOS["error_code"]
+    if down:
+        return resp(503, "服务不可用（混沌注入：服务宕机）")
+    if lat > 0:
+        time.sleep(lat)
+    if err_rate > 0 and random.random() < err_rate:
+        return resp(err_code, "混沌注入：随机服务端错误")
+
+
+@app.route("/api/chaos/set", methods=["POST"])
+def chaos_set():
+    body = request.get_json(silent=True) or {}
+    with _CHAOS_LOCK:
+        for k in ("latency", "error_rate", "error_code"):
+            if k in body and body[k] is not None:
+                CHAOS[k] = body[k]
+        if "down" in body:
+            CHAOS["down"] = bool(body["down"])
+    return resp(0, "chaos set", dict(CHAOS))
+
+
+@app.route("/api/chaos/reset", methods=["POST"])
+def chaos_reset():
+    with _CHAOS_LOCK:
+        CHAOS.update({"latency": 0.0, "error_rate": 0.0, "down": False, "error_code": 500})
+    return resp(0, "chaos reset", dict(CHAOS))
+
+
+@app.route("/api/chaos/status", methods=["GET"])
+def chaos_status():
+    with _CHAOS_LOCK:
+        return resp(0, "chaos status", dict(CHAOS))
+
+
+# ---------------- 可观测性 / 质量度量（Prometheus 风格 /metrics） ----------------
+# 每个请求采集：总量、5xx 错误数、累计/最大时延，供性能门禁与质量仪表盘消费。
+METRICS = {"req_total": 0, "req_err": 0, "lat_sum": 0.0, "lat_max": 0.0}
+_METRICS_LOCK = threading.Lock()
+
+
+@app.before_request
+def _start_timer():
+    g._t0 = time.perf_counter()
+
+
+@app.after_request
+def _metrics_collect(response):
+    dt = time.perf_counter() - getattr(g, "_t0", time.perf_counter())
+    with _METRICS_LOCK:
+        METRICS["req_total"] += 1
+        METRICS["lat_sum"] += dt
+        if dt > METRICS["lat_max"]:
+            METRICS["lat_max"] = dt
+        if response.status_code >= 500:
+            METRICS["req_err"] += 1
+    return response
+
+
+@app.route("/metrics")
+def metrics():
+    with _METRICS_LOCK:
+        avg = (METRICS["lat_sum"] / METRICS["req_total"]) if METRICS["req_total"] else 0.0
+        data = dict(METRICS)
+        data["lat_avg_ms"] = round(avg * 1000, 2)
+        data["lat_max_ms"] = round(METRICS["lat_max"] * 1000, 2)
+        data["err_rate"] = round(METRICS["req_err"] / METRICS["req_total"], 4) if METRICS["req_total"] else 0.0
+    return resp(0, "metrics", data)
 
 
 if __name__ == "__main__":

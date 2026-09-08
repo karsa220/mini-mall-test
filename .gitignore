@@ -8,6 +8,8 @@ env/
 
 # pytest / allure
 .pytest_cache/
+.coverage
+htmlcov/
 reports/allure-results/
 reports/allure-report/
 allure-results/
@@ -36,6 +38,12 @@ node_modules/
 mitm_assertions.json
 mitm_mock_events.json
 ws_messages.json
+perf_report.json
+chaos_report.json
+quality_metrics.json
+coverage.xml
+perf_stats*.csv
+server.log
 
 # 报告（allure 重新生成）
 reports/

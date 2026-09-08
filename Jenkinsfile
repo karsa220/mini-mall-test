@@ -1,11 +1,12 @@
 // Jenkinsfile — MiniMall 接口自动化（实战升级版）
 // 配套文档：docs/10-Jenkins教学.md
 //
-// 6 个大厂实战场景本文件已覆盖 3 个：
+// 6 大厂实战场景本文件已覆盖 3 个 + 企业级质量门禁：
 //   ✅ 场景 2：定时夜间跑      —— triggers { cron('0 2 * * *') }
 //   ✅ 场景 6：并行执行         —— parallel { ... } 三组用例并行，耗时降低 60%+
 //   ✅ 场景 5：失败自动建 bug   —— post.failure 调用 Jira REST API（需配凭凭）
-// 其余 3 个场景（多环境 / 质量门禁 / PR 拦截）见同目录的 demo 文件
+//   ✅ 企业级门禁：性能(Locust 阈值) / 混沌(故障注入) / 覆盖率(--cov-fail-under) 并行 + 质量度量归档
+// 其余场景（多环境 / PR 拦截）见同目录的 demo 文件
 
 pipeline {
     // ✅ 场景 1（部分）：多环境回归需配 agent label，本文件保持 agent any，
@@ -145,6 +146,58 @@ pipeline {
                         python3 -m pytest test_mitm_capture.py -v
                     '''
                 }
+            }
+        }
+
+        // 企业级质量门禁：性能 / 混沌 / 覆盖率 —— 任一不过则构建失败（质量门禁，fail fast）
+        // 对标字节测开 JD 的性能测试平台 + 高可用测试 + 质量门禁要求
+        stage('企业级质量门禁') {
+            parallel {
+                stage('性能门禁 (Locust)') {
+                    steps {
+                        dir('automation') {
+                            sh '''
+                                export PY=python3 MITMDUMP=mitmdump
+                                python3 run_perf_check.py
+                            '''
+                        }
+                    }
+                }
+                stage('混沌/故障注入') {
+                    steps {
+                        dir('automation') {
+                            sh '''
+                                export PY=python3 MITMDUMP=mitmdump
+                                python3 run_chaos_check.py
+                            '''
+                        }
+                    }
+                }
+                stage('覆盖率门禁') {
+                    steps {
+                        dir('automation') {
+                            sh '''
+                                # 单元层 + 组件层（Flask test client 进程内），覆盖率计入 app 模块
+                                python3 -m pytest test_unit.py test_api_server.py \
+                                  --cov=server --cov-report=xml --cov-fail-under=60
+                            '''
+                        }
+                    }
+                }
+            }
+        }
+
+        // 质量度量收集：/metrics + 各门禁报告汇总为质量仪表盘输入，可接入 Grafana/Prometheus
+        stage('质量度量归档') {
+            steps {
+                dir('automation') {
+                    sh '''
+                        curl -fsS ${BASE_URL}/metrics > quality_metrics.json || true
+                        echo "收集 perf_report.json / chaos_report.json / quality_metrics.json / coverage.xml"
+                    '''
+                }
+                archiveArtifacts artifacts: 'automation/perf_report.json,automation/chaos_report.json,automation/quality_metrics.json,automation/coverage.xml',
+                                  allowEmptyArchive: true
             }
         }
 

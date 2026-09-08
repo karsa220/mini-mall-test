@@ -21,6 +21,21 @@
 | **熟练使用 Charles/Fiddler** | Throttle / Breakpoints / Repeat Advanced / Map Local 全用上，证据可复现 | `docs/06-抓包测试实践.md`、`docs/08-Charles实战手册-以MiniMall为例.md` |
 | **熟练使用一门语言（Python）** | Flask 后端 + pytest 自动化 + YAML 数据驱动 | `app/server.py`、`automation/*.py` |
 
+## 企业级测试能力矩阵（对标大厂测开 JD）
+
+> 已按字节/大厂测开 JD 补齐「性能/混沌/覆盖率/造数/可观测性」等工程化能力，详见 `docs/14-企业级测试体系.md` 与 `docs/15-字节测开-JD与面经.md`。
+
+| 能力 | 实现 | 门禁/产出 | 文件 |
+|---|---|---|---|
+| 分层测试金字塔 | 单元(纯函数)+组件(Flask test client)+接口+UI | 单元/组件覆盖 69% | `test_unit.py` `test_api_server.py` |
+| **性能压测** | Locust 交易主链路，解析 P95/错误率 | p95≤800ms、错误率≤1% 卡 CI | `perf_test.py` `run_perf_check.py` |
+| **混沌/高可用** | `/api/chaos` 应用级 + mitmproxy 网络级 504 | 故障被感知/降级 | `server.py` `mitmproxy_chaos_addon.py` |
+| **覆盖率门禁** | pytest-cov 行覆盖 | `--cov-fail-under=60` | `Jenkinsfile` |
+| **测试数据工厂** | 合成数据 + 每用例独立命名空间 | 解决数据污染 | `data_factory.py` |
+| **契约守护** | HAR 契约 diff（消费者驱动契约等价） | 破坏性变更退出码非0 | `har_contract_diff.py` |
+| **可观测性** | `/metrics`：QPS/错误率/时延分位 | 质量仪表盘输入 | `server.py` |
+| CI 质量门禁 | Jenkins 并行门禁 + SonarQube | fail fast | `Jenkinsfile` |
+
 ## 项目结构
 
 ```
