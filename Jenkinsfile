@@ -132,6 +132,22 @@ pipeline {
             }
         }
 
+        // ✅ 抓包自动化（mitmproxy）：把"抓包"做成可重复、可断言、可进 CI 的资产
+        // 覆盖 4 个测开进阶能力：基础字段断言 / WebSocket 抓包 / Mock改包 / HAR 契约 diff
+        stage('抓包自动化 (mitmproxy)') {
+            steps {
+                dir('automation') {
+                    sh '''
+                        python3 -m pip install --quiet mitmproxy websocket-client 2>/dev/null || true
+                        export PY=python3
+                        export MITMDUMP=mitmdump
+                        # 各脚本自包含起停 server + 代理，pytest 退出码即断言结果
+                        python3 -m pytest test_mitm_capture.py -v
+                    '''
+                }
+            }
+        }
+
         stage('Merge Allure 结果') {
             steps {
                 dir('automation') {

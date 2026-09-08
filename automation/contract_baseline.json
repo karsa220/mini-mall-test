@@ -1,0 +1,19 @@
+{
+  "POST /api/login": {
+    "token": "str"
+  },
+  "POST /api/cart/add": {
+    "1": "int",
+    "2": "int"
+  },
+  "POST /api/order/create": {
+    "created_at": "str",
+    "discount": "float",
+    "items": "dict",
+    "order_id": "str",
+    "payable": "float",
+    "status": "str",
+    "total": "float",
+    "username": "str"
+  }
+}

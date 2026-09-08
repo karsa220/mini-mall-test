@@ -28,3 +28,14 @@ Thumbs.db
 # 临时文件
 *.log
 *.tmp
+
+# 依赖（项目根误装，不推）
+node_modules/
+
+# 抓包/运行时产物（每次运行重新生成，不推仓库；保留 contract_baseline.json 作为契约基准）
+mitm_assertions.json
+mitm_mock_events.json
+ws_messages.json
+
+# 报告（allure 重新生成）
+reports/
